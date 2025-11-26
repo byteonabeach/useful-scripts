@@ -1,6 +1,7 @@
 #!/bin/bash
 
-# Check if terminal supports Unicode and colors
+DELETE_ORIGINALS=false
+
 check_unicode_support() {
     if [[ -n "$TERM" && "$TERM" != "dumb" ]] && command -v tput >/dev/null 2>&1; then
         if tput colors >/dev/null 2>&1 && [[ $(tput colors) -ge 8 ]]; then
@@ -9,26 +10,30 @@ check_unicode_support() {
             RED='\033[0;31m'
             YELLOW='\033[1;33m'
             BLUE='\033[0;34m'
+            CYAN='\033[0;36m'
             NC='\033[0m'
             CHECK_MARK="✅"
             X_MARK="❌"
             WARNING="⚠️"
             INFO="ℹ️"
+            TRASH="🗑️"
         else
             HAS_UNICODE=0
-            GREEN=''; RED=''; YELLOW=''; BLUE=''; NC=''
+            GREEN=''; RED=''; YELLOW=''; BLUE=''; CYAN=''; NC=''
             CHECK_MARK="[OK]"
             X_MARK="[ERROR]"
             WARNING="[WARN]"
             INFO="[INFO]"
+            TRASH="[DELETE]"
         fi
     else
         HAS_UNICODE=0
-        GREEN=''; RED=''; YELLOW=''; BLUE=''; NC=''
+        GREEN=''; RED=''; YELLOW=''; BLUE=''; CYAN=''; NC=''
         CHECK_MARK="[OK]"
         X_MARK="[ERROR]"
         WARNING="[WARN]"
         INFO="[INFO]"
+        TRASH="[DELETE]"
     fi
 }
 
@@ -65,6 +70,13 @@ print_status() {
                 echo "${INFO} ${message}"
             fi
             ;;
+        "delete")
+            if [[ $HAS_UNICODE -eq 1 ]]; then
+                echo -e "${CYAN}${TRASH} ${message}${NC}"
+            else
+                echo "${TRASH} ${message}"
+            fi
+            ;;
     esac
 }
 
@@ -85,6 +97,7 @@ log_message() {
         "ERROR") print_status "error" "$message" ;;
         "WARNING") print_status "warning" "$message" ;;
         "INFO") print_status "info" "$message" ;;
+        "DELETE") print_status "delete" "$message" ;;
     esac
 }
 
@@ -126,6 +139,14 @@ convert_m4a_to_flac() {
             
             if ffmpeg -v error -i "$output_file" -f null - 2>/dev/null; then
                 log_message "SUCCESS" "FLAC file passed integrity check"
+                
+                if [[ "$DELETE_ORIGINALS" == true ]]; then
+                    if rm "$input_file"; then
+                        log_message "DELETE" "Original M4A file deleted: $input_file"
+                    else
+                        log_message "ERROR" "Failed to delete original file: $input_file"
+                    fi
+                fi
                 return 0
             else
                 log_message "ERROR" "FLAC file corrupted after conversion"
@@ -187,24 +208,84 @@ check_dependencies() {
 show_summary() {
     local success_count=$(grep -c "Successfully converted:" "$LOG_FILE" 2>/dev/null || echo 0)
     local error_count=$(grep -c "Conversion failed\|File corrupted\|does not contain" "$LOG_FILE" 2>/dev/null || echo 0)
+    local delete_count=0
+    
+    if [[ "$DELETE_ORIGINALS" == true ]]; then
+        delete_count=$(grep -c "Original M4A file deleted:" "$LOG_FILE" 2>/dev/null || echo 0)
+    fi
+    
     local total_count=$((success_count + error_count))
     
     echo
     print_status "info" "=== CONVERSION SUMMARY ==="
     print_status "success" "Successfully converted: $success_count files"
+    if [[ "$DELETE_ORIGINALS" == true ]]; then
+        print_status "delete" "Original M4A files deleted: $delete_count files"
+    fi
     print_status "error" "Failed: $error_count files"
     print_status "info" "Total processed: $total_count files"
     print_status "info" "Detailed log: $LOG_FILE"
 }
 
+show_usage() {
+    echo "Usage: $0 [OPTIONS] [DIRECTORY]"
+    echo
+    echo "Options:"
+    echo "  -d, --delete-originals    Delete original M4A files after successful conversion"
+    echo "  -h, --help               Show this help message"
+    echo
+    echo "If DIRECTORY is not specified, current directory will be used."
+}
+
+parse_arguments() {
+    local start_dir="."
+    
+    while [[ $# -gt 0 ]]; do
+        case $1 in
+            -d|--delete-originals)
+                DELETE_ORIGINALS=true
+                shift
+                ;;
+            -h|--help)
+                show_usage
+                exit 0
+                ;;
+            -*)
+                echo "Unknown option: $1"
+                show_usage
+                exit 1
+                ;;
+            *)
+                start_dir="$1"
+                shift
+                ;;
+        esac
+    done
+    
+    echo "$start_dir"
+}
+
 main() {
-    local start_dir="${1:-.}"
+    local start_dir
+    
+    start_dir=$(parse_arguments "$@")
     
     check_unicode_support
     setup_logging
     
     log_message "INFO" "Starting M4A to FLAC conversion script"
     log_message "INFO" "Unicode support: $HAS_UNICODE"
+    log_message "INFO" "Delete originals: $DELETE_ORIGINALS"
+    
+    if [[ "$DELETE_ORIGINALS" == true ]]; then
+        print_status "warning" "ORIGINAL M4A FILES WILL BE DELETED AFTER SUCCESSFUL CONVERSION"
+        read -p "Are you sure you want to continue? (y/N): " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            echo "Operation cancelled"
+            exit 0
+        fi
+    fi
     
     if [[ ! -d "$start_dir" ]]; then
         log_message "ERROR" "Directory '$start_dir' does not exist"
